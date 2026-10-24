@@ -57,6 +57,10 @@ export function groupPermitsForInvalidation(permits: readonly InvalidationPermit
 
 /**
  * Copy for the funding-wallet delete action, which invalidates Permit2 nonces on-chain.
+ * Accurately reflects that all pending owned permits are invalidated, not just bogus ones.
+ * @param isPending - Whether the invalidation transaction is in progress.
+ * @param permitCount - Number of invalidatable permits.
+ * @returns Labels and tooltip copy for the funding-wallet action.
  */
 export function getFundingWalletActionLabels(isPending: boolean, permitCount: number): FundingWalletActionLabels {
   const countText = `(${permitCount} Permit${permitCount === 1 ? "" : "s"})`;
@@ -67,6 +71,6 @@ export function getFundingWalletActionLabels(isPending: boolean, permitCount: nu
     countText,
     buttonText: isPending ? pendingText : "Delete",
     pendingText,
-    title: "Delete bogus permits by invalidating their Permit2 nonces on-chain",
+    title: "Delete all pending owned permits by invalidating their Permit2 nonces on-chain",
   };
 }

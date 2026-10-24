@@ -74,7 +74,7 @@ describe("getFundingWalletActionLabels", () => {
       countText: "(3 Permits)",
       buttonText: "Delete",
       pendingText: "Deleting...",
-      title: "Delete bogus permits by invalidating their Permit2 nonces on-chain",
+      title: "Delete all pending owned permits by invalidating their Permit2 nonces on-chain",
     });
   });
 
@@ -84,11 +84,17 @@ describe("getFundingWalletActionLabels", () => {
       countText: "(1 Permit)",
       buttonText: "Deleting...",
       pendingText: "Deleting...",
-      title: "Delete bogus permits by invalidating their Permit2 nonces on-chain",
+      title: "Delete all pending owned permits by invalidating their Permit2 nonces on-chain",
     });
   });
 
   test("counts zero permits as plural", () => {
     expect(getFundingWalletActionLabels(false, 0).countText).toBe("(0 Permits)");
+  });
+
+  test("accurately claims all pending owned permits and avoids misleading bogus-only claim", () => {
+    const labels = getFundingWalletActionLabels(false, 5);
+    expect(labels.title).toContain("all pending owned permits");
+    expect(labels.title.toLowerCase()).not.toContain("bogus");
   });
 });
