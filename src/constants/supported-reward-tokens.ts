@@ -55,19 +55,34 @@ export const SUPPORTED_REWARD_TOKENS_BY_CHAIN: Record<number, RewardTokenInfo[]>
   [arbitrum.id]: ARBITRUM_ONE_TOKENS,
 };
 
-// Helper function to get tokens for a specific chain
+/**
+ * Returns the list of supported reward tokens for a given chain.
+ * @param chainId - The EVM chain ID, or undefined.
+ * @returns An array of token info objects, or an empty array if the chain is unsupported.
+ */
 export function getSupportedRewardTokensForChain(chainId: number | undefined): RewardTokenInfo[] {
   if (!chainId) return [];
   return SUPPORTED_REWARD_TOKENS_BY_CHAIN[chainId] || [];
 }
 
-// Helper function to get a specific token's info
+/**
+ * Looks up a specific token's metadata by its on-chain contract address.
+ * @param chainId - The EVM chain ID, or undefined.
+ * @param tokenAddress - The token contract address to look up, or null/undefined.
+ * @returns The matching RewardTokenInfo, or undefined if not found.
+ */
 export function getTokenInfo(chainId: number | undefined, tokenAddress: Address | null | undefined): RewardTokenInfo | undefined {
   if (!chainId || !tokenAddress) return undefined;
   const tokens = getSupportedRewardTokensForChain(chainId);
   return tokens.find((token) => token.address.toLowerCase() === tokenAddress.toLowerCase());
 }
 
+/**
+ * Finds a token by its human-readable symbol (case-insensitive) on a given chain.
+ * @param chainId - The EVM chain ID, or undefined.
+ * @param symbol - The token symbol to search for (e.g., "USDC", "WETH").
+ * @returns The matching RewardTokenInfo, or undefined if not found.
+ */
 export function getTokenBySymbol(chainId: number | undefined, symbol: string): RewardTokenInfo | undefined {
   if (!chainId) return undefined;
   const normalized = symbol.trim().toLowerCase();

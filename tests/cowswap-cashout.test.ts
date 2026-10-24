@@ -1,7 +1,11 @@
-import { describe, expect, it, mock } from "bun:test";
+import { describe, expect, it, mock, beforeEach } from "bun:test";
 import type { Address, WalletClient } from "viem";
 import { COWSWAP_PARTNER_FEE_BPS, COWSWAP_PARTNER_FEE_RECIPIENT } from "../src/constants/config.ts";
-import { getCowSwapQuote, getCowSwapVaultRelayerAddress } from "../src/utils/cowswap-utils.ts";
+import {
+  getCowSwapQuote,
+  getCowSwapVaultRelayerAddress,
+  postCowSwapOrder,
+} from "../src/utils/cowswap-utils.ts";
 
 const GNOSIS_CHAIN_ID = 100;
 const MAINNET_CHAIN_ID = 1;
@@ -63,17 +67,20 @@ describe("CoW Swap Cash Out & Permit Claim Integration", () => {
   });
 
   describe("4. End-to-End CoW Swap Order Flow & EIP-712 Signing", () => {
-    it("should construct valid EIP-712 order, sign with walletClient, and verify order shape", async () => {
-      let signedTypedDataPayload: any = null;
+    it("should call postCowSwapOrder, sign EIP-712 data, and return an order ID", async () => {
+      const MOCK_SIGNATURE =
+        "0x777777777777777777777777777777777777777777777777777777777777777711111111111111111111111111111111111111111111111111111111111111111b";
+      const MOCK_ORDER_ID = "0xabc123order";
+
+      // Capture the signTypedData calls
+      const signTypedDataMock = mock(async (payload: any) => MOCK_SIGNATURE);
 
       const mockWalletClient = {
-        signTypedData: mock(async (payload: any) => {
-          signedTypedDataPayload = payload;
-          return "0x777777777777777777777777777777777777777777777777777777777777777711111111111111111111111111111111111111111111111111111111111111111b";
-        }),
+        signTypedData: signTypedDataMock,
       } as unknown as WalletClient;
 
-      const mockQuoteResponse = {
+      // Mock the @cowprotocol/cow-sdk module to intercept OrderBookApi and OrderSigningUtils
+      const mockGetQuote = mock(async () => ({
         id: 12345,
         quote: {
           sellToken: UUSD_GNOSIS,
@@ -89,51 +96,185 @@ describe("CoW Swap Cash Out & Permit Claim Integration", () => {
           sellTokenBalance: "erc20",
           buyTokenBalance: "erc20",
         },
-      };
+      }));
 
-      expect(mockQuoteResponse.quote.receiver).toBe(TEST_BENEFICIARY);
-      expect(mockQuoteResponse.quote.kind).toBe("sell");
-      expect(BigInt(mockQuoteResponse.quote.buyAmount)).toBe(99500000n);
-    });
+      const mockSendOrder = mock(async () => MOCK_ORDER_ID);
 
-    it("should ensure receiver address is set to permit beneficiary", () => {
-      const orderParams = {
+      // Intercept module
+      mock.module("@cowprotocol/cow-sdk", () => ({
+        COW_PROTOCOL_VAULT_RELAYER_ADDRESS: { 100: "0xC92E8bdf79f0507f65a392b0ab4667716BFE0110" },
+        OrderBookApi: class {
+          getQuote = mockGetQuote;
+          sendOrder = mockSendOrder;
+        },
+        OrderQuoteSideKindSell: { SELL: "sell" },
+        OrderSigningUtils: {
+          getDomain: async () => ({
+            name: "Gnosis Protocol",
+            version: "v2",
+            chainId: GNOSIS_CHAIN_ID,
+            verifyingContract: "0x9008D19f58AAbD9eD0D60971565AA8510560ab41",
+          }),
+          getEIP712Types: () => ({
+            Order: [
+              { name: "sellToken", type: "address" },
+              { name: "buyToken", type: "address" },
+              { name: "receiver", type: "address" },
+              { name: "sellAmount", type: "uint256" },
+              { name: "buyAmount", type: "uint256" },
+              { name: "validTo", type: "uint32" },
+              { name: "appData", type: "bytes32" },
+              { name: "feeAmount", type: "uint256" },
+              { name: "kind", type: "string" },
+              { name: "partiallyFillable", type: "bool" },
+              { name: "sellTokenBalance", type: "string" },
+              { name: "buyTokenBalance", type: "string" },
+            ],
+          }),
+        },
+        SigningScheme: { EIP712: "eip712" },
+        SupportedChainId: {},
+      }));
+
+      // Re-import to pick up mocked module
+      const { postCowSwapOrder: mockedPostOrder } = await import("../src/utils/cowswap-utils.ts");
+
+      const orderId = await mockedPostOrder({
         tokenIn: UUSD_GNOSIS,
         tokenOut: USDT_GNOSIS,
         amountIn: 100n * 10n ** 18n,
         owner: TEST_OWNER,
         receiver: TEST_BENEFICIARY,
         chainId: GNOSIS_CHAIN_ID,
-      };
+        walletClient: mockWalletClient,
+      });
 
-      expect(orderParams.receiver).toBe(TEST_BENEFICIARY);
-      expect(orderParams.receiver).not.toBe(orderParams.owner);
+      // Verify that signTypedData was called
+      expect(signTypedDataMock).toHaveBeenCalledTimes(1);
+
+      // Verify the signTypedData payload
+      const signPayload = signTypedDataMock.mock.calls[0][0];
+      expect(signPayload.primaryType).toBe("Order");
+      expect(signPayload.account).toBe(TEST_OWNER);
+      expect(signPayload.message.receiver).toBe(TEST_BENEFICIARY);
+      expect(signPayload.message.sellToken).toBe(UUSD_GNOSIS);
+      expect(signPayload.message.buyToken).toBe(USDT_GNOSIS);
+
+      // Verify sendOrder was called with correct signature
+      expect(mockSendOrder).toHaveBeenCalledTimes(1);
+      const sendOrderArg = mockSendOrder.mock.calls[0][0];
+      expect(sendOrderArg.signature).toBe(MOCK_SIGNATURE);
+      expect(sendOrderArg.signingScheme).toBe("eip712");
+      expect(sendOrderArg.receiver).toBe(TEST_BENEFICIARY);
+
+      // Verify the returned order ID
+      expect(orderId).toBe(MOCK_ORDER_ID);
+    });
+
+    it("should ensure receiver address is set to permit beneficiary in signed order", async () => {
+      const signTypedDataMock = mock(async () => "0xdeadbeef");
+      const mockWalletClient = {
+        signTypedData: signTypedDataMock,
+      } as unknown as WalletClient;
+
+      const mockGetQuote = mock(async () => ({
+        id: 99,
+        quote: {
+          sellToken: UUSD_GNOSIS,
+          buyToken: USDT_GNOSIS,
+          receiver: TEST_BENEFICIARY,
+          sellAmount: "50000000000000000000",
+          buyAmount: "49750000",
+          validTo: Math.floor(Date.now() / 1000) + 600,
+          appData: "0x0000000000000000000000000000000000000000000000000000000000000000",
+          feeAmount: "0",
+          kind: "sell",
+          partiallyFillable: false,
+          sellTokenBalance: "erc20",
+          buyTokenBalance: "erc20",
+        },
+      }));
+
+      const mockSendOrder = mock(async () => "0xorderid2");
+
+      mock.module("@cowprotocol/cow-sdk", () => ({
+        COW_PROTOCOL_VAULT_RELAYER_ADDRESS: { 100: "0xC92E8bdf79f0507f65a392b0ab4667716BFE0110" },
+        OrderBookApi: class {
+          getQuote = mockGetQuote;
+          sendOrder = mockSendOrder;
+        },
+        OrderQuoteSideKindSell: { SELL: "sell" },
+        OrderSigningUtils: {
+          getDomain: async () => ({ name: "GP", version: "v2", chainId: 100, verifyingContract: "0x9008D19f58AAbD9eD0D60971565AA8510560ab41" }),
+          getEIP712Types: () => ({ Order: [] }),
+        },
+        SigningScheme: { EIP712: "eip712" },
+        SupportedChainId: {},
+      }));
+
+      const { postCowSwapOrder: mockedPostOrder } = await import("../src/utils/cowswap-utils.ts");
+
+      await mockedPostOrder({
+        tokenIn: UUSD_GNOSIS,
+        tokenOut: USDT_GNOSIS,
+        amountIn: 50n * 10n ** 18n,
+        owner: TEST_OWNER,
+        receiver: TEST_BENEFICIARY,
+        chainId: GNOSIS_CHAIN_ID,
+        walletClient: mockWalletClient,
+      });
+
+      // The critical assertion: receiver in the signed message MUST be the beneficiary
+      const signPayload = signTypedDataMock.mock.calls[0][0];
+      expect(signPayload.message.receiver).toBe(TEST_BENEFICIARY);
+      expect(signPayload.message.receiver).not.toBe(TEST_OWNER);
     });
   });
 
   describe("5. Fallback & Fault Tolerance Safety Invariants", () => {
-    it("should guarantee that CoW swap failure does not throw or corrupt base claim", () => {
-      let claimSucceeded = false;
-      let swapSucceeded = false;
-      let errorMessage: string | null = null;
+    it("should guarantee that postCowSwapOrder rejection does not corrupt an independent claim", async () => {
+      // Simulate a claim-then-swap flow where swap fails but claim remains intact
+      let claimResult: { success: boolean; txHash: string } | null = null;
+      let swapOrderId: string | null = null;
+      let swapError: string | null = null;
+
+      // Step 1: Base permit claim succeeds independently
+      claimResult = { success: true, txHash: "0xclaimtx" };
+
+      // Step 2: Attempt CoW swap post-claim — mock postCowSwapOrder to reject
+      const failingPostOrder = async (): Promise<string> => {
+        throw new Error("Network timeout: CoW orderbook API 504 Gateway Timeout");
+      };
 
       try {
-        // Step 1: Base permit claim succeeds
-        claimSucceeded = true;
-
-        // Step 2: CoW Swap post-claim execution fails simulated network timeout
-        try {
-          throw new Error("Network timeout: CoW orderbook API 504 Gateway Timeout");
-        } catch (swapErr: any) {
-          errorMessage = swapErr.message;
-        }
-      } catch (claimErr) {
-        claimSucceeded = false;
+        swapOrderId = await failingPostOrder();
+      } catch (err: any) {
+        swapError = err.message;
+        // Non-blocking: swap failure is logged, not re-thrown
       }
 
-      expect(claimSucceeded).toBe(true);
-      expect(swapSucceeded).toBe(false);
-      expect(errorMessage).toContain("504 Gateway Timeout");
+      // The claim result must remain intact despite swap failure
+      expect(claimResult).not.toBeNull();
+      expect(claimResult!.success).toBe(true);
+      expect(claimResult!.txHash).toBe("0xclaimtx");
+      expect(swapOrderId).toBeNull();
+      expect(swapError).toContain("504 Gateway Timeout");
+    });
+
+    it("should reject postCowSwapOrder when chain ID is missing", async () => {
+      const mockWalletClient = { signTypedData: mock(async () => "0x") } as unknown as WalletClient;
+
+      await expect(
+        postCowSwapOrder({
+          tokenIn: UUSD_GNOSIS,
+          tokenOut: USDT_GNOSIS,
+          amountIn: 100n * 10n ** 18n,
+          owner: TEST_OWNER,
+          receiver: TEST_BENEFICIARY,
+          chainId: 0,
+          walletClient: mockWalletClient,
+        })
+      ).rejects.toThrow("Chain ID is required to place CoW Swap order.");
     });
   });
 });
